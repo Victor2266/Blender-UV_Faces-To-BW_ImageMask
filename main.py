@@ -1,5 +1,5 @@
 #
-# Python script for Blender (Version 1.3 - Working in Blender 4.5)
+# Python script for Blender (Version 1.5 - Mode Set Fix)
 #
 # Author: Victor Do
 #
@@ -9,12 +9,13 @@
 #
 
 import bpy
+import numpy as np # Import numpy for fast array operations
 
 # bl_info defines the add-on's properties for Blender
 bl_info = {
     "name": "Create Image Mask from Selection",
     "author": "Victor Do",
-    "version": (1, 3),
+    "version": (1, 5),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar (N key) > Mask Creator",
     "description": "Creates a black and white image mask from selected faces.",
@@ -70,32 +71,39 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
         if not mesh.uv_layers:
             self.report({'ERROR'}, "Object has no UV map. Please unwrap the mesh first.")
             return {'CANCELLED'}
+            
+        # --- OPTIMIZATION: Get selected status into a NumPy array ---
+        num_polygons = len(mesh.polygons)
+        polygon_selection = np.zeros(num_polygons, dtype=bool)
+        mesh.polygons.foreach_get('select', polygon_selection)
 
-        if not any(p.select for p in mesh.polygons):
+        if not np.any(polygon_selection):
             self.report({'ERROR'}, "No faces are selected.")
             return {'CANCELLED'}
         
         # --- PRESERVATION ---
-        selected_face_indices = {p.index for p in mesh.polygons if p.select}
+        selected_face_indices = np.where(polygon_selection)[0]
         original_mode = context.mode
         original_engine = context.scene.render.engine
-        # Store original material index for each polygon
         original_material_indices = [p.material_index for p in mesh.polygons]
 
         bpy.ops.object.mode_set(mode='OBJECT')
 
-        # --- VERTEX COLOR SETUP ---
+        # --- VERTEX COLOR SETUP (OPTIMIZED) ---
         VCOL_LAYER_NAME = "temp_mask_vcol"
         if VCOL_LAYER_NAME in mesh.vertex_colors:
             mesh.vertex_colors.remove(mesh.vertex_colors[VCOL_LAYER_NAME])
         vc_layer = mesh.vertex_colors.new(name=VCOL_LAYER_NAME)
         
-        white = (1.0, 1.0, 1.0, 1.0)
-        black = (0.0, 0.0, 0.0, 1.0)
-        for poly in mesh.polygons:
-            color = white if poly.index in selected_face_indices else black
-            for loop_index in poly.loop_indices:
-                vc_layer.data[loop_index].color = color
+        poly_colors = np.repeat(polygon_selection, [len(p.vertices) for p in mesh.polygons])
+        
+        num_loops = len(mesh.loops)
+        colors = np.zeros((num_loops, 4), dtype=np.float32)
+        colors[:, 3] = 1.0
+        
+        colors[poly_colors, :3] = 1.0
+        
+        vc_layer.data.foreach_set('color', colors.ravel())
 
         # --- MATERIAL SETUP ---
         BAKE_MATERIAL_NAME = "temp_mask_bake_material"
@@ -114,7 +122,6 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
         bake_material.node_tree.links.new(vcol_node.outputs['Color'], emission_node.inputs['Color'])
         bake_material.node_tree.links.new(emission_node.outputs['Emission'], output_node.inputs['Surface'])
         
-        # Assign bake material to all faces ---
         obj.data.materials.append(bake_material)
         bake_material_slot_index = len(obj.data.materials) - 1
         for p in mesh.polygons:
@@ -145,26 +152,24 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
         # --- CLEANUP ---
         mesh.vertex_colors.remove(vc_layer)
 
-        # Restore original material assignments
         for i, p in enumerate(mesh.polygons):
             p.material_index = original_material_indices[i]
             
-        # Remove the temporary bake material from the object and Blender's data
         obj.data.materials.pop(index=bake_material_slot_index)
         bpy.data.materials.remove(bake_material)
         
         context.scene.render.engine = original_engine
 
-        # Restore selection safely ---
-        # Deselect all faces in mesh data
-        for p in mesh.polygons:
-            p.select = False
-        # Reselect the original faces in mesh data
-        for i in selected_face_indices:
-            mesh.polygons[i].select = True
+        # Restore selection safely
+        polygon_selection_restore = np.zeros(num_polygons, dtype=bool)
+        polygon_selection_restore[selected_face_indices.tolist()] = True
+        mesh.polygons.foreach_set('select', polygon_selection_restore)
             
-        # Restore original mode
-        bpy.ops.object.mode_set(mode=original_mode)
+        # --- FIX ---
+        # The context.mode can be 'EDIT_MESH', but ops.object.mode_set expects 'EDIT'
+        final_mode = 'EDIT' if original_mode == 'EDIT_MESH' else original_mode
+        bpy.ops.object.mode_set(mode=final_mode)
+        # --- END FIX ---
 
         self.report({'INFO'}, f"Successfully created mask image '{props.image_name}'.")
         return {'FINISHED'}
@@ -208,5 +213,4 @@ def register():
 def unregister():
     del bpy.types.Scene.mask_creator_props
     for cls in reversed(classes):
-        # Corrected the unregister function call ---
         bpy.utils.unregister_class(cls)
