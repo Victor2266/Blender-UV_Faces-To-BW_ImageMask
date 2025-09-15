@@ -1,5 +1,5 @@
 #
-# Python script for Blender (Version 1.5 - Mode Set Fix)
+# Python script for Blender (Version 1.6 - Selection Sync Fix)
 #
 # Author: Victor Do
 #
@@ -15,7 +15,7 @@ import numpy as np # Import numpy for fast array operations
 bl_info = {
     "name": "Create Image Mask from Selection",
     "author": "Victor Do",
-    "version": (1, 5),
+    "version": (1, 6),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar (N key) > Mask Creator",
     "description": "Creates a black and white image mask from selected faces.",
@@ -71,8 +71,12 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
         if not mesh.uv_layers:
             self.report({'ERROR'}, "Object has no UV map. Please unwrap the mesh first.")
             return {'CANCELLED'}
+        
+        # --- FIX: Ensure mesh data is synced with the current Edit Mode state ---
+        mesh.update_from_editmode()
+        # --- END FIX ---
             
-        # --- OPTIMIZATION: Get selected status into a NumPy array ---
+        # Get selected status into a NumPy array
         num_polygons = len(mesh.polygons)
         polygon_selection = np.zeros(num_polygons, dtype=bool)
         mesh.polygons.foreach_get('select', polygon_selection)
@@ -165,11 +169,8 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
         polygon_selection_restore[selected_face_indices.tolist()] = True
         mesh.polygons.foreach_set('select', polygon_selection_restore)
             
-        # --- FIX ---
-        # The context.mode can be 'EDIT_MESH', but ops.object.mode_set expects 'EDIT'
         final_mode = 'EDIT' if original_mode == 'EDIT_MESH' else original_mode
         bpy.ops.object.mode_set(mode=final_mode)
-        # --- END FIX ---
 
         self.report({'INFO'}, f"Successfully created mask image '{props.image_name}'.")
         return {'FINISHED'}
