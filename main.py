@@ -156,7 +156,7 @@ class MASK_PT_panel(bpy.types.Panel):
     bl_idname = "MASK_PT_image_mask_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'Edit'
+    bl_category = 'Mask Creator'
 
     def draw(self, context):
         layout = self.layout
