@@ -1,5 +1,5 @@
 #
-# Python script for Blender (Version 1.2 - Blender 3.x/4.x API Fix)
+# Python script for Blender (Version 1.3 - Working in Blender 4.5)
 #
 # Author: Victor Do
 #
@@ -14,9 +14,9 @@ import bpy
 bl_info = {
     "name": "Create Image Mask from Selection",
     "author": "Victor Do",
-    "version": (1, 2),
+    "version": (1, 3),
     "blender": (3, 0, 0),
-    "location": "View3D > Sidebar (N key) > Edit Tab",
+    "location": "View3D > Sidebar (N key) > Mask Creator",
     "description": "Creates a black and white image mask from selected faces.",
     "warning": "Object must have a UV map.",
     "doc_url": "",
@@ -75,29 +75,29 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
             self.report({'ERROR'}, "No faces are selected.")
             return {'CANCELLED'}
         
+        # --- PRESERVATION ---
         selected_face_indices = {p.index for p in mesh.polygons if p.select}
         original_mode = context.mode
         original_engine = context.scene.render.engine
-        original_material = obj.active_material
+        # Store original material index for each polygon
+        original_material_indices = [p.material_index for p in mesh.polygons]
+
         bpy.ops.object.mode_set(mode='OBJECT')
 
+        # --- VERTEX COLOR SETUP ---
         VCOL_LAYER_NAME = "temp_mask_vcol"
         if VCOL_LAYER_NAME in mesh.vertex_colors:
             mesh.vertex_colors.remove(mesh.vertex_colors[VCOL_LAYER_NAME])
         vc_layer = mesh.vertex_colors.new(name=VCOL_LAYER_NAME)
         
-        # --- FIX ---
-        # The line below was changed from 'mesh.vertex_colors.active_render = vc_layer'
-        # to use the modern generic attribute system for Blender 3.0+
-        mesh.attributes.active_color = mesh.attributes[VCOL_LAYER_NAME]
-        # --- END FIX ---
-        
         white = (1.0, 1.0, 1.0, 1.0)
         black = (0.0, 0.0, 0.0, 1.0)
         for poly in mesh.polygons:
+            color = white if poly.index in selected_face_indices else black
             for loop_index in poly.loop_indices:
-                vc_layer.data[loop_index].color = white if poly.index in selected_face_indices else black
+                vc_layer.data[loop_index].color = color
 
+        # --- MATERIAL SETUP ---
         BAKE_MATERIAL_NAME = "temp_mask_bake_material"
         if BAKE_MATERIAL_NAME in bpy.data.materials:
             bpy.data.materials.remove(bpy.data.materials[BAKE_MATERIAL_NAME])
@@ -105,15 +105,22 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
         bake_material.use_nodes = True
         nodes = bake_material.node_tree.nodes
         nodes.clear()
+        
         output_node = nodes.new(type='ShaderNodeOutputMaterial')
         emission_node = nodes.new(type='ShaderNodeEmission')
         vcol_node = nodes.new(type='ShaderNodeVertexColor')
         vcol_node.layer_name = VCOL_LAYER_NAME
+        
         bake_material.node_tree.links.new(vcol_node.outputs['Color'], emission_node.inputs['Color'])
         bake_material.node_tree.links.new(emission_node.outputs['Emission'], output_node.inputs['Surface'])
+        
+        # Assign bake material to all faces ---
         obj.data.materials.append(bake_material)
-        obj.active_material_index = len(obj.data.materials) - 1
+        bake_material_slot_index = len(obj.data.materials) - 1
+        for p in mesh.polygons:
+            p.material_index = bake_material_slot_index
 
+        # --- IMAGE AND BAKE SETUP ---
         image = bpy.data.images.new(
             name=props.image_name,
             width=props.image_size,
@@ -127,24 +134,37 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
 
         self.report({'INFO'}, f"Baking mask to '{props.image_name}'...")
         context.scene.render.engine = 'CYCLES'
+        
+        # --- BAKE ---
         bpy.ops.object.bake(
             type='EMIT',
             margin=props.margin,
             use_clear=True
         )
 
+        # --- CLEANUP ---
         mesh.vertex_colors.remove(vc_layer)
-        obj.active_material = original_material
+
+        # Restore original material assignments
+        for i, p in enumerate(mesh.polygons):
+            p.material_index = original_material_indices[i]
+            
+        # Remove the temporary bake material from the object and Blender's data
+        obj.data.materials.pop(index=bake_material_slot_index)
         bpy.data.materials.remove(bake_material)
+        
         context.scene.render.engine = original_engine
+
+        # Restore selection safely ---
+        # Deselect all faces in mesh data
+        for p in mesh.polygons:
+            p.select = False
+        # Reselect the original faces in mesh data
+        for i in selected_face_indices:
+            mesh.polygons[i].select = True
+            
+        # Restore original mode
         bpy.ops.object.mode_set(mode=original_mode)
-        if original_mode == 'EDIT_MESH':
-            bpy.ops.mesh.select_mode(type="FACE")
-            bpy.ops.mesh.select_all(action='DESELECT')
-            bpy.ops.object.mode_set(mode='OBJECT')
-            for i in selected_face_indices:
-                mesh.polygons[i].select = True
-            bpy.ops.object.mode_set(mode='EDIT')
 
         self.report({'INFO'}, f"Successfully created mask image '{props.image_name}'.")
         return {'FINISHED'}
@@ -188,4 +208,5 @@ def register():
 def unregister():
     del bpy.types.Scene.mask_creator_props
     for cls in reversed(classes):
-        bpy.utils
+        # Corrected the unregister function call ---
+        bpy.utils.unregister_class(cls)
