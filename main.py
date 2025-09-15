@@ -1,5 +1,5 @@
 #
-# Python script for Blender (Version 1.6 - Selection Sync Fix)
+# Python script for Blender (Version 1.7 - Correct Selection Sync with BMesh)
 #
 # Author: Victor Do
 #
@@ -9,13 +9,14 @@
 #
 
 import bpy
-import numpy as np # Import numpy for fast array operations
+import numpy as np
+import bmesh # Import the bmesh module
 
 # bl_info defines the add-on's properties for Blender
 bl_info = {
     "name": "Create Image Mask from Selection",
     "author": "Victor Do",
-    "version": (1, 6),
+    "version": (1, 7),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar (N key) > Mask Creator",
     "description": "Creates a black and white image mask from selected faces.",
@@ -72,15 +73,19 @@ class MASK_OT_create_image_mask(bpy.types.Operator):
             self.report({'ERROR'}, "Object has no UV map. Please unwrap the mesh first.")
             return {'CANCELLED'}
         
-        # --- FIX: Ensure mesh data is synced with the current Edit Mode state ---
-        mesh.update_from_editmode()
-        # --- END FIX ---
-            
-        # Get selected status into a NumPy array
+        # --- FIX: Use BMesh to get the latest selection data from Edit Mode ---
+        # This is the correct way to ensure the selection is up-to-date.
+        bm = bmesh.from_edit_mesh(mesh)
+        
         num_polygons = len(mesh.polygons)
         polygon_selection = np.zeros(num_polygons, dtype=bool)
-        mesh.polygons.foreach_get('select', polygon_selection)
-
+        
+        # Access the live selection from the bmesh data
+        bm.faces.ensure_lookup_table() # Good practice for index stability
+        for face in bm.faces:
+            polygon_selection[face.index] = face.select
+        # --- END FIX ---
+            
         if not np.any(polygon_selection):
             self.report({'ERROR'}, "No faces are selected.")
             return {'CANCELLED'}
